@@ -972,7 +972,12 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.customId === 'ticket_goedkeuren') {
-      if (!hasAdminPermission(interaction)) return interaction.editReply('❌ Alleen admins kunnen dit.');
+
+      // Zorgt dat interaction altijd correct is gedeferred
+      await ensureEphemeralDefer(interaction);
+
+      if (!hasAdminPermission(interaction)) 
+        return interaction.editReply('❌ Alleen admins kunnen dit.');
 
       const info = parseTicketTopic(interaction.channel?.topic);
       if (!info) return interaction.editReply('❌ Ticket-info ontbreekt (topic).');
