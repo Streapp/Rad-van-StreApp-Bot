@@ -593,9 +593,6 @@ function resetGameProgress(game) {
 client.on('interactionCreate', async (interaction) => {
   // Slash commands
   if (interaction.isChatInputCommand()) {
-    // (ongewijzigd) — jouw slash commands blijven exact zoals je ze stuurde
-    // ... (alles hieronder is ongewijzigd t.o.v. jouw versie)
-
     if (interaction.commandName === 'nieuwspel') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen een nieuw spel starten.', ephemeral: true });
@@ -804,6 +801,7 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
+    // ✅ NIEUW: resetspel
     if (interaction.commandName === 'resetspel') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen dit.', ephemeral: true });
@@ -835,6 +833,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: `🧨 Spel ${spelNummer} is gereset. Dashboards zijn bijgewerkt.`, ephemeral: true });
     }
 
+    // ✅ AANGEPAST: geeftaak (nu ook negatieve aantallen veilig)
     if (interaction.commandName === 'geeftaak') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen dit.', ephemeral: true });
@@ -843,7 +842,10 @@ client.on('interactionCreate', async (interaction) => {
       const spel = interaction.options.getInteger('spel', true);
       const lid = interaction.options.getUser('lid', true);
       const taak = interaction.options.getInteger('taak', true);
-      const aantal = interaction.options.getInteger('aantal', false) ?? 1;
+
+      // mag nu negatief zijn
+      const aantalRaw = interaction.options.getInteger('aantal', false);
+      const aantal = aantalRaw ?? 1;
 
       const spelNummer = String(spel);
       const taakKey = String(taak);
@@ -856,10 +858,41 @@ client.on('interactionCreate', async (interaction) => {
       const spotsPer = game.taakSpots?.[taakKey] ?? 0;
       const spotsTotaal = spotsPer * aantal;
 
-      game.deelnemers[lid.id].taken[taakKey] = (game.deelnemers[lid.id].taken[taakKey] ?? 0) + aantal;
-      game.deelnemers[lid.id].totaalSpots = (game.deelnemers[lid.id].totaalSpots ?? 0) + spotsTotaal;
+      const huidigeTaken = game.deelnemers[lid.id].taken[taakKey] ?? 0;
+      const huidigeSpots = game.deelnemers[lid.id].totaalSpots ?? 0;
+      const huidigeTaakCount = game.taakCounts[taakKey] ?? 0;
 
-      game.taakCounts[taakKey] = (game.taakCounts[taakKey] ?? 0) + aantal;
+      const nieuweTaken = huidigeTaken + aantal;
+      const nieuweSpots = huidigeSpots + spotsTotaal;
+      const nieuweTaakCount = huidigeTaakCount + aantal;
+
+      // Veiligheidschecks: nooit onder 0
+      if (aantal === 0) {
+        return interaction.reply({ content: '⚠️ `aantal` mag niet 0 zijn.', ephemeral: true });
+      }
+      if (nieuweTaken < 0) {
+        return interaction.reply({
+          content: `❌ Kan niet ${Math.abs(aantal)}x afnemen: ${lid} heeft nu **${huidigeTaken}**x voor Taak ${taak}.`,
+          ephemeral: true,
+        });
+      }
+      if (nieuweSpots < 0) {
+        return interaction.reply({
+          content: `❌ Kan dit niet uitvoeren: Spots zouden onder 0 komen bij ${lid}.`,
+          ephemeral: true,
+        });
+      }
+      if (nieuweTaakCount < 0) {
+        return interaction.reply({
+          content: `❌ Kan dit niet uitvoeren: totaalteller voor Taak ${taak} zou onder 0 komen.`,
+          ephemeral: true,
+        });
+      }
+
+      // Pas toe
+      game.deelnemers[lid.id].taken[taakKey] = nieuweTaken;
+      game.deelnemers[lid.id].totaalSpots = nieuweSpots;
+      game.taakCounts[taakKey] = nieuweTaakCount;
 
       saveData(data);
 
@@ -894,12 +927,12 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.showModal(buildAfkeurModal(interaction.channelId));
     }
 
-    // ✅ FIX: cancel direct update (verwijdert knoppen meteen)
+    // cancel: update (knoppen weg)
     if (interaction.customId.startsWith('taak_cancel:')) {
       return interaction.update({ content: '❌ Geannuleerd. Er is geen ticket aangemaakt.', components: [] }).catch(() => {});
     }
 
-    // ✅ FIX: confirm -> eerst deferUpdate (ack), daarna editReply
+    // confirm: deferUpdate + editReply
     if (interaction.customId.startsWith('taak_confirm:')) {
       await interaction.deferUpdate().catch(() => {});
       const parts = interaction.customId.split(':');
@@ -915,7 +948,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // alle andere buttons: safe defer
+    // alle andere buttons: deferReply veilig
     await ensureEphemeralDefer(interaction);
 
     if (interaction.customId === 'aanmelden_spel') {
@@ -972,12 +1005,9 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.customId === 'ticket_goedkeuren') {
-
-      // Zorgt dat interaction altijd correct is gedeferred
       await ensureEphemeralDefer(interaction);
 
-      if (!hasAdminPermission(interaction)) 
-        return interaction.editReply('❌ Alleen admins kunnen dit.');
+      if (!hasAdminPermission(interaction)) return interaction.editReply('❌ Alleen admins kunnen dit.');
 
       const info = parseTicketTopic(interaction.channel?.topic);
       if (!info) return interaction.editReply('❌ Ticket-info ontbreekt (topic).');
