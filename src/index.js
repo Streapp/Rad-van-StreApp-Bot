@@ -118,6 +118,11 @@ async function logToChannel(guild, message) {
   await logChannel.send(message).catch(() => {});
 }
 
+async function ensureEphemeralDefer(interaction) {
+  if (interaction.deferred || interaction.replied) return;
+  await interaction.deferReply({ ephemeral: true }).catch(() => {});
+}
+
 function createTaakKnoppen(disabled = false) {
   const rows = [];
   let taakNummer = 1;
@@ -588,6 +593,9 @@ function resetGameProgress(game) {
 client.on('interactionCreate', async (interaction) => {
   // Slash commands
   if (interaction.isChatInputCommand()) {
+    // (ongewijzigd) — jouw slash commands blijven exact zoals je ze stuurde
+    // ... (alles hieronder is ongewijzigd t.o.v. jouw versie)
+
     if (interaction.commandName === 'nieuwspel') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen een nieuw spel starten.', ephemeral: true });
@@ -796,7 +804,6 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // ✅ NIEUW: resetspel
     if (interaction.commandName === 'resetspel') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen dit.', ephemeral: true });
@@ -828,7 +835,6 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: `🧨 Spel ${spelNummer} is gereset. Dashboards zijn bijgewerkt.`, ephemeral: true });
     }
 
-    // ✅ NIEUW: geeftaak
     if (interaction.commandName === 'geeftaak') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen dit.', ephemeral: true });
@@ -888,8 +894,29 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.showModal(buildAfkeurModal(interaction.channelId));
     }
 
-    // alle andere buttons: defer
-    await interaction.deferReply({ ephemeral: true }).catch(() => {});
+    // ✅ FIX: cancel direct update (verwijdert knoppen meteen)
+    if (interaction.customId.startsWith('taak_cancel:')) {
+      return interaction.update({ content: '❌ Geannuleerd. Er is geen ticket aangemaakt.', components: [] }).catch(() => {});
+    }
+
+    // ✅ FIX: confirm -> eerst deferUpdate (ack), daarna editReply
+    if (interaction.customId.startsWith('taak_confirm:')) {
+      await interaction.deferUpdate().catch(() => {});
+      const parts = interaction.customId.split(':');
+      const spelNummer = parts[1];
+      const taakNummer = parts[2];
+
+      try {
+        const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
+        return interaction.editReply({ content: `✅ Ticket aangemaakt: ${ticket}`, components: [] });
+      } catch (err) {
+        console.error(err);
+        return interaction.editReply({ content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.', components: [] });
+      }
+    }
+
+    // alle andere buttons: safe defer
+    await ensureEphemeralDefer(interaction);
 
     if (interaction.customId === 'aanmelden_spel') {
       const spelNummer = getSpelNummerUitKanaalnaam(interaction.channel?.name ?? '');
@@ -917,26 +944,6 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ✅ NEW: confirm -> create ticket
-    if (interaction.customId.startsWith('taak_confirm:')) {
-      const parts = interaction.customId.split(':');
-      const spelNummer = parts[1];
-      const taakNummer = parts[2];
-
-      try {
-        const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
-        return interaction.editReply({ content: `✅ Ticket aangemaakt: ${ticket}`, components: [] });
-      } catch (err) {
-        console.error(err);
-        return interaction.editReply({ content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.', components: [] });
-      }
-    }
-
-    // ✅ NEW: cancel -> no ticket  (FIX: remove buttons too)
-    if (interaction.customId.startsWith('taak_cancel:')) {
-      return interaction.editReply({ content: '❌ Geannuleerd. Er is geen ticket aangemaakt.', components: [] });
-    }
-
     if (interaction.customId.startsWith('taak_')) {
       const taakNummer = interaction.customId.split('_')[1];
       const spelNummer = getSpelNummerUitKanaalnaam(interaction.channel?.name ?? '');
@@ -954,7 +961,6 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply(`❌ Je bent nog niet aangemeld voor Spel ${spelNummer}. Klik eerst op **Aanmelden**.`);
       }
 
-      // ✅ Changed: show confirmation first (no ticket yet)
       return interaction.editReply({
         content:
           `Gaaf! 🎉 Heb je **Taak ${taakNummer}** uitgevoerd?\n\n` +
