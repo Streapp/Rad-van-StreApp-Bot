@@ -932,7 +932,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ✅ NEW: cancel -> no ticket
+    // ✅ NEW: cancel -> no ticket  (FIX: remove buttons too)
     if (interaction.customId.startsWith('taak_cancel:')) {
       return interaction.editReply({ content: '❌ Geannuleerd. Er is geen ticket aangemaakt.', components: [] });
     }
