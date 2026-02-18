@@ -145,6 +145,21 @@ function createAdminActieKnoppen() {
   );
 }
 
+/* ---------------- NEW: confirm/cancel before ticket creation ---------------- */
+
+function createTaakConfirmKnoppen(spelNummer, taakNummer) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`taak_confirm:${spelNummer}:${taakNummer}`)
+      .setLabel('✅ Ticket openen')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`taak_cancel:${spelNummer}:${taakNummer}`)
+      .setLabel('❌ Annuleren')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
 function parseTicketTopic(topic) {
   if (!topic) return null;
   const spelMatch = topic.match(/Spel\s+(\d+)/i);
@@ -902,6 +917,26 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // ✅ NEW: confirm -> create ticket
+    if (interaction.customId.startsWith('taak_confirm:')) {
+      const parts = interaction.customId.split(':');
+      const spelNummer = parts[1];
+      const taakNummer = parts[2];
+
+      try {
+        const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
+        return interaction.editReply({ content: `✅ Ticket aangemaakt: ${ticket}`, components: [] });
+      } catch (err) {
+        console.error(err);
+        return interaction.editReply({ content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.', components: [] });
+      }
+    }
+
+    // ✅ NEW: cancel -> no ticket
+    if (interaction.customId.startsWith('taak_cancel:')) {
+      return interaction.editReply({ content: '❌ Geannuleerd. Er is geen ticket aangemaakt.', components: [] });
+    }
+
     if (interaction.customId.startsWith('taak_')) {
       const taakNummer = interaction.customId.split('_')[1];
       const spelNummer = getSpelNummerUitKanaalnaam(interaction.channel?.name ?? '');
@@ -919,13 +954,15 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply(`❌ Je bent nog niet aangemeld voor Spel ${spelNummer}. Klik eerst op **Aanmelden**.`);
       }
 
-      try {
-        const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
-        return interaction.editReply(`✅ Ticket aangemaakt: ${ticket}`);
-      } catch (err) {
-        console.error(err);
-        return interaction.editReply('❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.');
-      }
+      // ✅ Changed: show confirmation first (no ticket yet)
+      return interaction.editReply({
+        content:
+          `Gaaf! 🎉 Heb je **Taak ${taakNummer}** uitgevoerd?\n\n` +
+          `✅ Klik dan op **Ticket openen** en drop je bewijs (URL of screenshot).\n` +
+          `❌ Heb je de taak niet voltooid? Klik dan op **Annuleren**.\n\n` +
+          `Zo voorkomen we onnodig werk voor onze admins.`,
+        components: [createTaakConfirmKnoppen(spelNummer, taakNummer)],
+      });
     }
 
     if (interaction.customId === 'ticket_goedkeuren') {
