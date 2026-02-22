@@ -25,7 +25,9 @@ const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const SPEL_CATEGORY_ID = process.env.SPEL_CATEGORY_ID;
 const ADMIN_CATEGORY_ID = process.env.ADMIN_CATEGORY_ID;
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// ✅ Render Disk fallback (Render -> /var/data, lokaal -> ../data)
+const DISK_MOUNT_PATH = '/var/data'; // Render Disk mount
+const DATA_DIR = fs.existsSync(DISK_MOUNT_PATH) ? DISK_MOUNT_PATH : path.join(__dirname, '..', 'data');
 const DATA_FILE = path.join(DATA_DIR, 'speldata.json');
 
 client.once('clientReady', () => {
