@@ -160,6 +160,17 @@ function createTaakConfirmKnoppen(spelNummer, taakNummer) {
   );
 }
 
+/* ---------------- NEW: safe number helper (BELANGRIJK) ---------------- */
+
+function toNumber(v, fallback = 0) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    const n = Number(v.replace(',', '.'));
+    if (Number.isFinite(n)) return n;
+  }
+  return fallback;
+}
+
 function parseTicketTopic(topic) {
   if (!topic) return null;
   const spelMatch = topic.match(/Spel\s+(\d+)/i);
@@ -270,9 +281,9 @@ function buildDashboardText(game, spelNummer) {
 
   const rows = Object.entries(deelnemers)
     .map(([userId, info]) => {
-      const totaal = info.totaalSpots ?? 0;
-      const taken = info.taken ?? {};
-      const totaalTaken = Object.values(taken).reduce((a, b) => a + (b || 0), 0);
+      const totaal = toNumber(info?.totaalSpots ?? 0, 0);
+      const taken = info?.taken ?? {};
+      const totaalTaken = Object.values(taken).reduce((a, b) => a + toNumber(b, 0), 0);
       return { userId, totaal, totaalTaken };
     })
     .sort((a, b) => b.totaal - a.totaal);
@@ -297,12 +308,12 @@ function buildAdminDashboardText(game, spelNummer) {
   const deelnemers = game.deelnemers || {};
   const rows = Object.entries(deelnemers)
     .map(([userId, info]) => {
-      const spots = info.totaalSpots ?? 0;
-      const taken = info.taken ?? {};
+      const spots = toNumber(info?.totaalSpots ?? 0, 0);
+      const taken = info?.taken ?? {};
       const counts = [];
       let totaalTaken = 0;
       for (let t = 1; t <= 9; t++) {
-        const c = taken[String(t)] ?? 0;
+        const c = toNumber(taken[String(t)] ?? 0, 0);
         counts.push(c);
         totaalTaken += c;
       }
@@ -558,7 +569,7 @@ async function setAanmeldenButtonInChannel(channel, disabled) {
   return true;
 }
 
-/* ---------------- NEW: reset + manual award helpers ---------------- */
+/* ---------------- reset + manual award helpers ---------------- */
 
 function ensureDeelnemer(game, userId) {
   if (!game.deelnemers[userId]) {
@@ -567,13 +578,16 @@ function ensureDeelnemer(game, userId) {
       taken: { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 },
     };
   } else {
-    if (typeof game.deelnemers[userId].totaalSpots !== 'number') game.deelnemers[userId].totaalSpots = 0;
-    if (!game.deelnemers[userId].taken) {
+    // ✅ BELANGRIJK: NIET resetten naar 0 als het een string is, maar netjes omzetten
+    game.deelnemers[userId].totaalSpots = toNumber(game.deelnemers[userId].totaalSpots, 0);
+
+    if (!game.deelnemers[userId].taken || typeof game.deelnemers[userId].taken !== 'object') {
       game.deelnemers[userId].taken = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
     }
+
     for (let t = 1; t <= 9; t++) {
       const k = String(t);
-      if (typeof game.deelnemers[userId].taken[k] !== 'number') game.deelnemers[userId].taken[k] = 0;
+      game.deelnemers[userId].taken[k] = toNumber(game.deelnemers[userId].taken[k], 0);
     }
   }
 }
@@ -583,7 +597,7 @@ function resetGameProgress(game) {
   game.taakCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
 }
 
-/* ---------------- NEW: ensure ephemeral defer helper ---------------- */
+/* ---------------- ensure ephemeral defer helper ---------------- */
 
 async function ensureEphemeralDefer(interaction) {
   try {
@@ -595,31 +609,39 @@ async function ensureEphemeralDefer(interaction) {
   }
 }
 
-/* ---------------- NEW: opschoon helpers ---------------- */
+/* ---------------- opschoon helpers ---------------- */
 
 function deelnemerIsLeeg(info) {
-  const spots = typeof info?.totaalSpots === 'number' ? info.totaalSpots : 0;
+  const spots = toNumber(info?.totaalSpots, 0);
   const taken = info?.taken || {};
   let totaalTaken = 0;
   for (let t = 1; t <= 9; t++) {
-    totaalTaken += (taken[String(t)] ?? 0);
+    totaalTaken += toNumber(taken[String(t)] ?? 0, 0);
   }
   return spots === 0 && totaalTaken === 0;
 }
 
 function sanitizeDeelnemerStructuur(game) {
   const deelnemers = game.deelnemers || {};
-  for (const [userId, info] of Object.entries(deelnemers)) {
+  for (const userId of Object.keys(deelnemers)) {
     ensureDeelnemer(game, userId);
-    // ensureDeelnemer fixt structuur; scores blijven zoals ze zijn (behalve als corrupt -> default 0)
-    // We nemen bestaande waarden over waar mogelijk:
-    if (typeof info?.totaalSpots === 'number') game.deelnemers[userId].totaalSpots = info.totaalSpots;
-    if (info?.taken && typeof info.taken === 'object') {
-      for (let t = 1; t <= 9; t++) {
-        const k = String(t);
-        if (typeof info.taken[k] === 'number') game.deelnemers[userId].taken[k] = info.taken[k];
-      }
-    }
+  }
+
+  // ook taakCounts/taakSpots netjes maken als er strings in staan
+  if (!game.taakCounts || typeof game.taakCounts !== 'object') {
+    game.taakCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
+  }
+  for (let t = 1; t <= 9; t++) {
+    const k = String(t);
+    game.taakCounts[k] = toNumber(game.taakCounts[k], 0);
+  }
+
+  if (!game.taakSpots || typeof game.taakSpots !== 'object') {
+    game.taakSpots = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
+  }
+  for (let t = 1; t <= 9; t++) {
+    const k = String(t);
+    game.taakSpots[k] = toNumber(game.taakSpots[k], 0);
   }
 }
 
@@ -899,13 +921,13 @@ client.on('interactionCreate', async (interaction) => {
 
       ensureDeelnemer(game, lid.id);
 
-      const spotsPer = game.taakSpots?.[taakKey] ?? 0;
+      const spotsPer = toNumber(game.taakSpots?.[taakKey] ?? 0, 0);
 
       // Negatief = afnemen (veilig: niet onder 0)
       if (aantal < 0) {
         const abs = Math.abs(aantal);
 
-        const huidigTaken = game.deelnemers[lid.id].taken[taakKey] ?? 0;
+        const huidigTaken = toNumber(game.deelnemers[lid.id].taken[taakKey] ?? 0, 0);
         if (huidigTaken < abs) {
           return interaction.reply({ content: `❌ Kan niet afnemen: ${lid} heeft Taak ${taak} maar **${huidigTaken}x**.`, ephemeral: true });
         }
@@ -913,9 +935,9 @@ client.on('interactionCreate', async (interaction) => {
         const spotsAfnemen = spotsPer * abs;
 
         game.deelnemers[lid.id].taken[taakKey] = huidigTaken - abs;
-        game.deelnemers[lid.id].totaalSpots = Math.max(0, (game.deelnemers[lid.id].totaalSpots ?? 0) - spotsAfnemen);
+        game.deelnemers[lid.id].totaalSpots = Math.max(0, toNumber(game.deelnemers[lid.id].totaalSpots ?? 0, 0) - spotsAfnemen);
 
-        game.taakCounts[taakKey] = Math.max(0, (game.taakCounts[taakKey] ?? 0) - abs);
+        game.taakCounts[taakKey] = Math.max(0, toNumber(game.taakCounts[taakKey] ?? 0, 0) - abs);
 
         saveData(data);
 
@@ -940,10 +962,10 @@ client.on('interactionCreate', async (interaction) => {
       // Positief = toekennen
       const spotsTotaal = spotsPer * aantal;
 
-      game.deelnemers[lid.id].taken[taakKey] = (game.deelnemers[lid.id].taken[taakKey] ?? 0) + aantal;
-      game.deelnemers[lid.id].totaalSpots = (game.deelnemers[lid.id].totaalSpots ?? 0) + spotsTotaal;
+      game.deelnemers[lid.id].taken[taakKey] = toNumber(game.deelnemers[lid.id].taken[taakKey] ?? 0, 0) + aantal;
+      game.deelnemers[lid.id].totaalSpots = toNumber(game.deelnemers[lid.id].totaalSpots ?? 0, 0) + spotsTotaal;
 
-      game.taakCounts[taakKey] = (game.taakCounts[taakKey] ?? 0) + aantal;
+      game.taakCounts[taakKey] = toNumber(game.taakCounts[taakKey] ?? 0, 0) + aantal;
 
       saveData(data);
 
@@ -965,7 +987,7 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // ✅ NIEUW: opschoonspel
+    // ✅ opschoonspel (SAFE MODE: repairet alleen, verwijdert niks)
     if (interaction.commandName === 'opschoonspel') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen dit.', ephemeral: true });
@@ -980,16 +1002,7 @@ client.on('interactionCreate', async (interaction) => {
       // 1) structure repair (veilig)
       sanitizeDeelnemerStructuur(game);
 
-      // 2) opschonen (alleen 0/0)
-      const before = Object.keys(game.deelnemers || {}).length;
-      for (const [userId, info] of Object.entries(game.deelnemers || {})) {
-        if (deelnemerIsLeeg(info)) {
-          delete game.deelnemers[userId];
-        }
-      }
-      const after = Object.keys(game.deelnemers || {}).length;
-      const removed = before - after;
-
+      // 2) GEEN deletions meer (SAFE MODE)
       saveData(data);
 
       // 3) dashboards refresh
@@ -1001,12 +1014,12 @@ client.on('interactionCreate', async (interaction) => {
 
       await logToChannel(
         interaction.guild,
-        `🧹 **Opschoonspel uitgevoerd**\n🎡 Spel: **${spelNummer}**\n🧽 Verwijderd (0/0): **${removed}**\n` +
+        `🧹 **Opschoonspel uitgevoerd (SAFE MODE)**\n🎡 Spel: **${spelNummer}**\n🧽 Verwijderd (0/0): **0**\n` +
           `🔁 Admin dashboard force refresh: ${forced ? 'ja' : 'nee'}\n🛠️ Admin: ${interaction.user} (\`${interaction.user.id}\`)\n🕒 ${formatTimestamp(new Date())}`
       );
 
       return interaction.reply({
-        content: `🧹 Opschoonspel klaar voor Spel ${spelNummer}.\n• Verwijderd (0 spots/0 taken): ${removed}\n• Admin dashboard force refresh: ${forced ? '✅' : '⚠️'}`,
+        content: `🧹 Opschoonspel (SAFE MODE) klaar voor Spel ${spelNummer}.\n• Verwijderd (0 spots/0 taken): 0\n• Admin dashboard force refresh: ${forced ? '✅' : '⚠️'}`,
         ephemeral: true,
       });
     }
@@ -1110,14 +1123,14 @@ client.on('interactionCreate', async (interaction) => {
 
       const data = loadData();
       const game = getOrCreateGame(data, interaction.guildId, info.spelNummer);
-      const spotsVoorTaak = game.taakSpots?.[String(info.taakNummer)] ?? 0;
+      const spotsVoorTaak = toNumber(game.taakSpots?.[String(info.taakNummer)] ?? 0, 0);
 
       ensureDeelnemer(game, info.userId);
 
-      game.deelnemers[info.userId].totaalSpots += spotsVoorTaak;
+      game.deelnemers[info.userId].totaalSpots = toNumber(game.deelnemers[info.userId].totaalSpots ?? 0, 0) + spotsVoorTaak;
       game.deelnemers[info.userId].taken[String(info.taakNummer)] =
-        (game.deelnemers[info.userId].taken[String(info.taakNummer)] ?? 0) + 1;
-      game.taakCounts[String(info.taakNummer)] = (game.taakCounts[String(info.taakNummer)] ?? 0) + 1;
+        toNumber(game.deelnemers[info.userId].taken[String(info.taakNummer)] ?? 0, 0) + 1;
+      game.taakCounts[String(info.taakNummer)] = toNumber(game.taakCounts[String(info.taakNummer)] ?? 0, 0) + 1;
 
       saveData(data);
 
