@@ -66,7 +66,6 @@ const commands = [
         .setRequired(true)
     ),
 
-  // ✅ NIEUW: reset spel
   new SlashCommandBuilder()
     .setName('resetspel')
     .setDescription('Reset alle scores/tellingen van een spel (taak spots blijven staan).')
@@ -81,7 +80,6 @@ const commands = [
         .setRequired(true)
     ),
 
-  // ✅ NIEUW: handmatig taak toekennen
   new SlashCommandBuilder()
     .setName('geeftaak')
     .setDescription('Ken een taak handmatig toe aan een lid (incl Spots + dashboards).')
@@ -104,10 +102,20 @@ const commands = [
     )
     .addIntegerOption(option =>
       option.setName('aantal')
-        .setDescription('Hoeveel keer (default 1)')
+        .setDescription('Hoeveel keer (default 1) — gebruik negatief om af te nemen')
         .setRequired(false)
-        .setMinValue(1)
+        .setMinValue(-1000)
         .setMaxValue(1000)
+    ),
+
+  // ✅ NIEUW: opschoonspel (veilig opschonen + admin dashboard refresh)
+  new SlashCommandBuilder()
+    .setName('opschoonspel')
+    .setDescription('Opschonen van deelnemerslijst (verwijdert alleen 0-spots/0-taken) + force refresh dashboards.')
+    .addIntegerOption(option =>
+      option.setName('spel')
+        .setDescription('Spelnummer, bijv 7')
+        .setRequired(true)
     ),
 ].map(cmd => cmd.toJSON());
 

@@ -118,11 +118,6 @@ async function logToChannel(guild, message) {
   await logChannel.send(message).catch(() => {});
 }
 
-async function ensureEphemeralDefer(interaction) {
-  if (interaction.deferred || interaction.replied) return;
-  await interaction.deferReply({ ephemeral: true }).catch(() => {});
-}
-
 function createTaakKnoppen(disabled = false) {
   const rows = [];
   let taakNummer = 1;
@@ -588,6 +583,60 @@ function resetGameProgress(game) {
   game.taakCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
 }
 
+/* ---------------- NEW: ensure ephemeral defer helper ---------------- */
+
+async function ensureEphemeralDefer(interaction) {
+  try {
+    if (interaction.deferred || interaction.replied) return true;
+    await interaction.deferReply({ ephemeral: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ---------------- NEW: opschoon helpers ---------------- */
+
+function deelnemerIsLeeg(info) {
+  const spots = typeof info?.totaalSpots === 'number' ? info.totaalSpots : 0;
+  const taken = info?.taken || {};
+  let totaalTaken = 0;
+  for (let t = 1; t <= 9; t++) {
+    totaalTaken += (taken[String(t)] ?? 0);
+  }
+  return spots === 0 && totaalTaken === 0;
+}
+
+function sanitizeDeelnemerStructuur(game) {
+  const deelnemers = game.deelnemers || {};
+  for (const [userId, info] of Object.entries(deelnemers)) {
+    ensureDeelnemer(game, userId);
+    // ensureDeelnemer fixt structuur; scores blijven zoals ze zijn (behalve als corrupt -> default 0)
+    // We nemen bestaande waarden over waar mogelijk:
+    if (typeof info?.totaalSpots === 'number') game.deelnemers[userId].totaalSpots = info.totaalSpots;
+    if (info?.taken && typeof info.taken === 'object') {
+      for (let t = 1; t <= 9; t++) {
+        const k = String(t);
+        if (typeof info.taken[k] === 'number') game.deelnemers[userId].taken[k] = info.taken[k];
+      }
+    }
+  }
+}
+
+async function forceRefreshAdminDashboard(guild, guildId, spelNummer) {
+  const data = loadData();
+  const game = getOrCreateGame(data, guildId, spelNummer);
+
+  const adminCh = await ensureAdminChannel(guild, guildId, spelNummer);
+
+  const msg = await adminCh.send(buildAdminDashboardText(game, spelNummer)).catch(() => null);
+  if (!msg) return false;
+
+  game.adminDashboard = { channelId: adminCh.id, messageId: msg.id };
+  saveData(data);
+  return true;
+}
+
 /* ---------------- Main interaction handler ---------------- */
 
 client.on('interactionCreate', async (interaction) => {
@@ -801,7 +850,6 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // ✅ NIEUW: resetspel
     if (interaction.commandName === 'resetspel') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen dit.', ephemeral: true });
@@ -833,7 +881,6 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: `🧨 Spel ${spelNummer} is gereset. Dashboards zijn bijgewerkt.`, ephemeral: true });
     }
 
-    // ✅ AANGEPAST: geeftaak (nu ook negatieve aantallen veilig)
     if (interaction.commandName === 'geeftaak') {
       if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
         return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen dit.', ephemeral: true });
@@ -842,10 +889,7 @@ client.on('interactionCreate', async (interaction) => {
       const spel = interaction.options.getInteger('spel', true);
       const lid = interaction.options.getUser('lid', true);
       const taak = interaction.options.getInteger('taak', true);
-
-      // mag nu negatief zijn
-      const aantalRaw = interaction.options.getInteger('aantal', false);
-      const aantal = aantalRaw ?? 1;
+      const aantal = interaction.options.getInteger('aantal', false) ?? 1;
 
       const spelNummer = String(spel);
       const taakKey = String(taak);
@@ -856,43 +900,50 @@ client.on('interactionCreate', async (interaction) => {
       ensureDeelnemer(game, lid.id);
 
       const spotsPer = game.taakSpots?.[taakKey] ?? 0;
+
+      // Negatief = afnemen (veilig: niet onder 0)
+      if (aantal < 0) {
+        const abs = Math.abs(aantal);
+
+        const huidigTaken = game.deelnemers[lid.id].taken[taakKey] ?? 0;
+        if (huidigTaken < abs) {
+          return interaction.reply({ content: `❌ Kan niet afnemen: ${lid} heeft Taak ${taak} maar **${huidigTaken}x**.`, ephemeral: true });
+        }
+
+        const spotsAfnemen = spotsPer * abs;
+
+        game.deelnemers[lid.id].taken[taakKey] = huidigTaken - abs;
+        game.deelnemers[lid.id].totaalSpots = Math.max(0, (game.deelnemers[lid.id].totaalSpots ?? 0) - spotsAfnemen);
+
+        game.taakCounts[taakKey] = Math.max(0, (game.taakCounts[taakKey] ?? 0) - abs);
+
+        saveData(data);
+
+        await updateDashboard(interaction.guild, interaction.guildId, spelNummer);
+        await updateAdminDashboard(interaction.guild, interaction.guildId, spelNummer);
+
+        await logToChannel(
+          interaction.guild,
+          `🛠️ **Handmatige afname**\n🎡 Spel: **${spelNummer}**\n👤 Lid: ${lid} (\`${lid.id}\`)\n` +
+            `📌 Taak: **${taak}** | 🔁 Aantal: **-${abs}**\n` +
+            `➖ Spots: **${spotsAfnemen}** (=${spotsPer} × ${abs})\n` +
+            `🛠️ Admin: ${interaction.user} (\`${interaction.user.id}\`)\n🕒 ${formatTimestamp(new Date())}`
+        );
+
+        return interaction.reply({
+          content:
+            `✅ Afgenomen van ${lid}:\n• Spel ${spelNummer} — Taak ${taak} × ${-abs}\n• Spots eraf: ${spotsAfnemen} (=${spotsPer}×${abs})\nDashboards bijgewerkt.`,
+          ephemeral: true,
+        });
+      }
+
+      // Positief = toekennen
       const spotsTotaal = spotsPer * aantal;
 
-      const huidigeTaken = game.deelnemers[lid.id].taken[taakKey] ?? 0;
-      const huidigeSpots = game.deelnemers[lid.id].totaalSpots ?? 0;
-      const huidigeTaakCount = game.taakCounts[taakKey] ?? 0;
+      game.deelnemers[lid.id].taken[taakKey] = (game.deelnemers[lid.id].taken[taakKey] ?? 0) + aantal;
+      game.deelnemers[lid.id].totaalSpots = (game.deelnemers[lid.id].totaalSpots ?? 0) + spotsTotaal;
 
-      const nieuweTaken = huidigeTaken + aantal;
-      const nieuweSpots = huidigeSpots + spotsTotaal;
-      const nieuweTaakCount = huidigeTaakCount + aantal;
-
-      // Veiligheidschecks: nooit onder 0
-      if (aantal === 0) {
-        return interaction.reply({ content: '⚠️ `aantal` mag niet 0 zijn.', ephemeral: true });
-      }
-      if (nieuweTaken < 0) {
-        return interaction.reply({
-          content: `❌ Kan niet ${Math.abs(aantal)}x afnemen: ${lid} heeft nu **${huidigeTaken}**x voor Taak ${taak}.`,
-          ephemeral: true,
-        });
-      }
-      if (nieuweSpots < 0) {
-        return interaction.reply({
-          content: `❌ Kan dit niet uitvoeren: Spots zouden onder 0 komen bij ${lid}.`,
-          ephemeral: true,
-        });
-      }
-      if (nieuweTaakCount < 0) {
-        return interaction.reply({
-          content: `❌ Kan dit niet uitvoeren: totaalteller voor Taak ${taak} zou onder 0 komen.`,
-          ephemeral: true,
-        });
-      }
-
-      // Pas toe
-      game.deelnemers[lid.id].taken[taakKey] = nieuweTaken;
-      game.deelnemers[lid.id].totaalSpots = nieuweSpots;
-      game.taakCounts[taakKey] = nieuweTaakCount;
+      game.taakCounts[taakKey] = (game.taakCounts[taakKey] ?? 0) + aantal;
 
       saveData(data);
 
@@ -914,6 +965,52 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
+    // ✅ NIEUW: opschoonspel
+    if (interaction.commandName === 'opschoonspel') {
+      if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+        return interaction.reply({ content: '❌ Alleen admins (Manage Server) mogen dit.', ephemeral: true });
+      }
+
+      const spel = interaction.options.getInteger('spel', true);
+      const spelNummer = String(spel);
+
+      const data = loadData();
+      const game = getOrCreateGame(data, interaction.guildId, spelNummer);
+
+      // 1) structure repair (veilig)
+      sanitizeDeelnemerStructuur(game);
+
+      // 2) opschonen (alleen 0/0)
+      const before = Object.keys(game.deelnemers || {}).length;
+      for (const [userId, info] of Object.entries(game.deelnemers || {})) {
+        if (deelnemerIsLeeg(info)) {
+          delete game.deelnemers[userId];
+        }
+      }
+      const after = Object.keys(game.deelnemers || {}).length;
+      const removed = before - after;
+
+      saveData(data);
+
+      // 3) dashboards refresh
+      await updateDashboard(interaction.guild, interaction.guildId, spelNummer);
+      await updateAdminDashboard(interaction.guild, interaction.guildId, spelNummer);
+
+      // 4) force refresh admin dashboard message (maakt nieuw bericht en tracked het)
+      const forced = await forceRefreshAdminDashboard(interaction.guild, interaction.guildId, spelNummer).catch(() => false);
+
+      await logToChannel(
+        interaction.guild,
+        `🧹 **Opschoonspel uitgevoerd**\n🎡 Spel: **${spelNummer}**\n🧽 Verwijderd (0/0): **${removed}**\n` +
+          `🔁 Admin dashboard force refresh: ${forced ? 'ja' : 'nee'}\n🛠️ Admin: ${interaction.user} (\`${interaction.user.id}\`)\n🕒 ${formatTimestamp(new Date())}`
+      );
+
+      return interaction.reply({
+        content: `🧹 Opschoonspel klaar voor Spel ${spelNummer}.\n• Verwijderd (0 spots/0 taken): ${removed}\n• Admin dashboard force refresh: ${forced ? '✅' : '⚠️'}`,
+        ephemeral: true,
+      });
+    }
+
     return;
   }
 
@@ -927,28 +1024,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.showModal(buildAfkeurModal(interaction.channelId));
     }
 
-    // cancel: update (knoppen weg)
-    if (interaction.customId.startsWith('taak_cancel:')) {
-      return interaction.update({ content: '❌ Geannuleerd. Er is geen ticket aangemaakt.', components: [] }).catch(() => {});
-    }
-
-    // confirm: deferUpdate + editReply
-    if (interaction.customId.startsWith('taak_confirm:')) {
-      await interaction.deferUpdate().catch(() => {});
-      const parts = interaction.customId.split(':');
-      const spelNummer = parts[1];
-      const taakNummer = parts[2];
-
-      try {
-        const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
-        return interaction.editReply({ content: `✅ Ticket aangemaakt: ${ticket}`, components: [] });
-      } catch (err) {
-        console.error(err);
-        return interaction.editReply({ content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.', components: [] });
-      }
-    }
-
-    // alle andere buttons: deferReply veilig
+    // alle andere buttons: defer (veilig)
     await ensureEphemeralDefer(interaction);
 
     if (interaction.customId === 'aanmelden_spel') {
@@ -975,6 +1051,24 @@ client.on('interactionCreate', async (interaction) => {
         console.error(err);
         return interaction.editReply('❌ Ik kan deze rol niet geven. Zet mijn botrol boven de Spel-rol en geef Manage Roles.');
       }
+    }
+
+    if (interaction.customId.startsWith('taak_confirm:')) {
+      const parts = interaction.customId.split(':');
+      const spelNummer = parts[1];
+      const taakNummer = parts[2];
+
+      try {
+        const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
+        return interaction.editReply({ content: `✅ Ticket aangemaakt: ${ticket}`, components: [] });
+      } catch (err) {
+        console.error(err);
+        return interaction.editReply({ content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.', components: [] });
+      }
+    }
+
+    if (interaction.customId.startsWith('taak_cancel:')) {
+      return interaction.editReply({ content: '❌ Geannuleerd. Er is geen ticket aangemaakt.', components: [] });
     }
 
     if (interaction.customId.startsWith('taak_')) {
@@ -1006,7 +1100,6 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.customId === 'ticket_goedkeuren') {
       await ensureEphemeralDefer(interaction);
-
       if (!hasAdminPermission(interaction)) return interaction.editReply('❌ Alleen admins kunnen dit.');
 
       const info = parseTicketTopic(interaction.channel?.topic);
@@ -1058,7 +1151,7 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isModalSubmit()) {
     if (!interaction.customId.startsWith('afkeur_reason:')) return;
 
-    await interaction.deferReply({ ephemeral: true }).catch(() => {});
+    await ensureEphemeralDefer(interaction);
 
     if (!hasAdminPermission(interaction)) return interaction.editReply('❌ Alleen admins kunnen dit.');
 
