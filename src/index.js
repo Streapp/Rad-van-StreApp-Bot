@@ -266,6 +266,70 @@ async function maakTicketKanaal({ guild, user, spelNummer, taakNummer }) {
   return channel;
 }
 
+/* ---------------- reset + manual award helpers ---------------- */
+
+function ensureDeelnemer(game, userId) {
+  if (!game.deelnemers[userId]) {
+    game.deelnemers[userId] = {
+      totaalSpots: 0,
+      taken: { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 },
+    };
+  } else {
+    // ✅ BELANGRIJK: NIET resetten naar 0 als het een string is, maar netjes omzetten
+    game.deelnemers[userId].totaalSpots = toNumber(game.deelnemers[userId].totaalSpots, 0);
+
+    if (!game.deelnemers[userId].taken || typeof game.deelnemers[userId].taken !== 'object') {
+      game.deelnemers[userId].taken = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
+    }
+
+    for (let t = 1; t <= 9; t++) {
+      const k = String(t);
+      game.deelnemers[userId].taken[k] = toNumber(game.deelnemers[userId].taken[k], 0);
+    }
+  }
+}
+
+function resetGameProgress(game) {
+  game.deelnemers = {};
+  game.taakCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
+}
+
+/* ---------------- opschoon helpers ---------------- */
+
+function deelnemerIsLeeg(info) {
+  const spots = toNumber(info?.totaalSpots, 0);
+  const taken = info?.taken || {};
+  let totaalTaken = 0;
+  for (let t = 1; t <= 9; t++) {
+    totaalTaken += toNumber(taken[String(t)] ?? 0, 0);
+  }
+  return spots === 0 && totaalTaken === 0;
+}
+
+function sanitizeDeelnemerStructuur(game) {
+  const deelnemers = game.deelnemers || {};
+  for (const userId of Object.keys(deelnemers)) {
+    ensureDeelnemer(game, userId);
+  }
+
+  // ook taakCounts/taakSpots netjes maken als er strings in staan
+  if (!game.taakCounts || typeof game.taakCounts !== 'object') {
+    game.taakCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
+  }
+  for (let t = 1; t <= 9; t++) {
+    const k = String(t);
+    game.taakCounts[k] = toNumber(game.taakCounts[k], 0);
+  }
+
+  if (!game.taakSpots || typeof game.taakSpots !== 'object') {
+    game.taakSpots = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
+  }
+  for (let t = 1; t <= 9; t++) {
+    const k = String(t);
+    game.taakSpots[k] = toNumber(game.taakSpots[k], 0);
+  }
+}
+
 /* ---------------- Dashboards ---------------- */
 
 function closedBanner(game) {
@@ -281,7 +345,9 @@ function buildDashboardText(game, spelNummer) {
   const taakDefLines = [];
   for (let t = 1; t <= 9; t++) taakDefLines.push(`Taak ${t}: **${taakSpots[String(t)] ?? 0}** Spots`);
 
+  // ✅ FILTER: verberg deelnemers met 0 spots én 0 taken
   const rows = Object.entries(deelnemers)
+    .filter(([, info]) => !deelnemerIsLeeg(info))
     .map(([userId, info]) => {
       const totaal = toNumber(info?.totaalSpots ?? 0, 0);
       const taken = info?.taken ?? {};
@@ -308,7 +374,10 @@ function buildDashboardText(game, spelNummer) {
 
 function buildAdminDashboardText(game, spelNummer) {
   const deelnemers = game.deelnemers || {};
+
+  // ✅ FILTER: verberg deelnemers met 0 spots én 0 taken
   const rows = Object.entries(deelnemers)
+    .filter(([, info]) => !deelnemerIsLeeg(info))
     .map(([userId, info]) => {
       const spots = toNumber(info?.totaalSpots ?? 0, 0);
       const taken = info?.taken ?? {};
@@ -571,34 +640,6 @@ async function setAanmeldenButtonInChannel(channel, disabled) {
   return true;
 }
 
-/* ---------------- reset + manual award helpers ---------------- */
-
-function ensureDeelnemer(game, userId) {
-  if (!game.deelnemers[userId]) {
-    game.deelnemers[userId] = {
-      totaalSpots: 0,
-      taken: { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 },
-    };
-  } else {
-    // ✅ BELANGRIJK: NIET resetten naar 0 als het een string is, maar netjes omzetten
-    game.deelnemers[userId].totaalSpots = toNumber(game.deelnemers[userId].totaalSpots, 0);
-
-    if (!game.deelnemers[userId].taken || typeof game.deelnemers[userId].taken !== 'object') {
-      game.deelnemers[userId].taken = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
-    }
-
-    for (let t = 1; t <= 9; t++) {
-      const k = String(t);
-      game.deelnemers[userId].taken[k] = toNumber(game.deelnemers[userId].taken[k], 0);
-    }
-  }
-}
-
-function resetGameProgress(game) {
-  game.deelnemers = {};
-  game.taakCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
-}
-
 /* ---------------- ensure ephemeral defer helper ---------------- */
 
 async function ensureEphemeralDefer(interaction) {
@@ -608,42 +649,6 @@ async function ensureEphemeralDefer(interaction) {
     return true;
   } catch {
     return false;
-  }
-}
-
-/* ---------------- opschoon helpers ---------------- */
-
-function deelnemerIsLeeg(info) {
-  const spots = toNumber(info?.totaalSpots, 0);
-  const taken = info?.taken || {};
-  let totaalTaken = 0;
-  for (let t = 1; t <= 9; t++) {
-    totaalTaken += toNumber(taken[String(t)] ?? 0, 0);
-  }
-  return spots === 0 && totaalTaken === 0;
-}
-
-function sanitizeDeelnemerStructuur(game) {
-  const deelnemers = game.deelnemers || {};
-  for (const userId of Object.keys(deelnemers)) {
-    ensureDeelnemer(game, userId);
-  }
-
-  // ook taakCounts/taakSpots netjes maken als er strings in staan
-  if (!game.taakCounts || typeof game.taakCounts !== 'object') {
-    game.taakCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
-  }
-  for (let t = 1; t <= 9; t++) {
-    const k = String(t);
-    game.taakCounts[k] = toNumber(game.taakCounts[k], 0);
-  }
-
-  if (!game.taakSpots || typeof game.taakSpots !== 'object') {
-    game.taakSpots = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
-  }
-  for (let t = 1; t <= 9; t++) {
-    const k = String(t);
-    game.taakSpots[k] = toNumber(game.taakSpots[k], 0);
   }
 }
 
