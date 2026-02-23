@@ -389,9 +389,9 @@ function buildDashboardText(game, spelNummer) {
   return (
     `📊 **Dashboard — Spel ${spelNummer}**\n\n` +
     closedBanner(game) +
-    `⚙️ **Spots per taak**\n${taakDefLines.map(l => `• ${l}`).join('\n')}\n\n` +
+    `⚙️ **Spots per taak**\n${taakDefLines.map((l) => `• ${l}`).join('\n')}\n\n` +
     `🏁 **Totaalscore**\n${scoreLines.join('\n')}\n\n` +
-    `📌 **Aantal uitgevoerde taken (totaal)**\n${taakCountLines.map(l => `• ${l}`).join('\n')}`
+    `📌 **Aantal uitgevoerde taken (totaal)**\n${taakCountLines.map((l) => `• ${l}`).join('\n')}`
   );
 }
 
@@ -441,9 +441,7 @@ function buildAdminDashboardPages(game, spelNummer) {
     const line = lines[i] + '\n';
     if ((current + line).length > MAX) {
       pages.push(current.trimEnd());
-      current =
-        `🔒 **Admin Dashboard — Spel ${spelNummer} (vervolg)**\n\n` +
-        (banner || '');
+      current = `🔒 **Admin Dashboard — Spel ${spelNummer} (vervolg)**\n\n` + (banner || '');
     }
     current += line;
   }
@@ -1108,15 +1106,12 @@ client.on('interactionCreate', async (interaction) => {
       const data = loadData();
       const game = getOrCreateGame(data, interaction.guildId, spelNummer);
 
-      // 1) repair (veilig)
       sanitizeDeelnemerStructuur(game);
       saveData(data);
 
-      // 2) refresh dashboards
       await updateDashboard(interaction.guild, interaction.guildId, spelNummer);
       await updateAdminDashboard(interaction.guild, interaction.guildId, spelNummer);
 
-      // 3) force refresh admin dashboard (nieuw bericht + track)
       const forced = await forceRefreshAdminDashboard(interaction.guild, interaction.guildId, spelNummer).catch(() => false);
 
       await logToChannel(
@@ -1173,22 +1168,82 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // ✅ FIX: confirm -> voorkom dubbel ticket + auto verdwijn
     if (interaction.customId.startsWith('taak_confirm:')) {
       const parts = interaction.customId.split(':');
       const spelNummer = parts[1];
       const taakNummer = parts[2];
 
+      // Check open ticket voor dezelfde user/spel/taak
+      const existing = interaction.guild.channels.cache.find((c) => {
+        if (c.type !== ChannelType.GuildText) return false;
+        if (TICKETS_CATEGORY_ID && c.parentId !== TICKETS_CATEGORY_ID) return false;
+        const topic = c.topic || '';
+        return topic.includes(`Spel ${spelNummer}`) && topic.includes(`Taak ${taakNummer}`) && topic.includes(`User ${interaction.user.id}`);
+      });
+
+      if (existing) {
+        await interaction
+          .editReply({
+            content: `ℹ️ Je hebt al een ticket openstaan voor **Spel ${spelNummer} – Taak ${taakNummer}**: ${existing}\nDit bericht verdwijnt zo.`,
+            components: [],
+          })
+          .catch(() => {});
+
+        setTimeout(() => {
+          interaction.deleteReply().catch(() => {});
+        }, 5000);
+
+        return;
+      }
+
       try {
         const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
-        return interaction.editReply({ content: `✅ Ticket aangemaakt: ${ticket}`, components: [] });
+
+        await interaction
+          .editReply({
+            content: `✅ Ticket aangemaakt: ${ticket}\nDit bericht verdwijnt zo.`,
+            components: [],
+          })
+          .catch(() => {});
+
+        setTimeout(() => {
+          interaction.deleteReply().catch(() => {});
+        }, 5000);
+
+        return;
       } catch (err) {
         console.error(err);
-        return interaction.editReply({ content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.', components: [] });
+
+        await interaction
+          .editReply({
+            content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.\nDit bericht verdwijnt zo.',
+            components: [],
+          })
+          .catch(() => {});
+
+        setTimeout(() => {
+          interaction.deleteReply().catch(() => {});
+        }, 7000);
+
+        return;
       }
     }
 
+    // ✅ FIX: cancel -> auto verdwijn
     if (interaction.customId.startsWith('taak_cancel:')) {
-      return interaction.editReply({ content: '❌ Geannuleerd. Er is geen ticket aangemaakt.', components: [] });
+      await interaction
+        .editReply({
+          content: '❌ Geannuleerd. Er is geen ticket aangemaakt.\nDit bericht verdwijnt zo.',
+          components: [],
+        })
+        .catch(() => {});
+
+      setTimeout(() => {
+        interaction.deleteReply().catch(() => {});
+      }, 4000);
+
+      return;
     }
 
     if (interaction.customId.startsWith('taak_')) {
@@ -1248,10 +1303,12 @@ client.on('interactionCreate', async (interaction) => {
         `✅ Je bewijs is verwerkt voor **Spel ${info.spelNummer} – Taak ${info.taakNummer}**.\nJe hebt **${spotsVoorTaak} Spots** ontvangen. 🎡`
       );
 
-      await interaction.channel.send(
-        `✅ Ticket goedgekeurd door ${interaction.user}.\n➕ **${spotsVoorTaak} Spots** toegekend.\n` +
-          `${dmOk ? '📩 DM verstuurd.' : '⚠️ Kon geen DM sturen.'}\n🔒 Ticket wordt gesloten.`
-      ).catch(() => {});
+      await interaction.channel
+        .send(
+          `✅ Ticket goedgekeurd door ${interaction.user}.\n➕ **${spotsVoorTaak} Spots** toegekend.\n` +
+            `${dmOk ? '📩 DM verstuurd.' : '⚠️ Kon geen DM sturen.'}\n🔒 Ticket wordt gesloten.`
+        )
+        .catch(() => {});
 
       await logToChannel(
         interaction.guild,
@@ -1288,10 +1345,12 @@ client.on('interactionCreate', async (interaction) => {
       );
     }
 
-    await interaction.channel.send(
-      `❌ Ticket afgekeurd door ${interaction.user}.\n**Reden:** ${reason}\n` +
-        `${dmOk ? '📩 DM verstuurd.' : '⚠️ Kon geen DM sturen.'}\n🔒 Ticket wordt gesloten.`
-    ).catch(() => {});
+    await interaction.channel
+      .send(
+        `❌ Ticket afgekeurd door ${interaction.user}.\n**Reden:** ${reason}\n` +
+          `${dmOk ? '📩 DM verstuurd.' : '⚠️ Kon geen DM sturen.'}\n🔒 Ticket wordt gesloten.`
+      )
+      .catch(() => {});
 
     await logToChannel(
       interaction.guild,
