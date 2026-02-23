@@ -1139,6 +1139,90 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.showModal(buildAfkeurModal(interaction.channelId));
     }
 
+    /**
+     * ✅ FIX (alleen dit): confirm/cancel moeten het BESTAANDE ephemeral bericht updaten
+     * (dat met de knoppen), en daarna datzelfde bericht verwijderen.
+     * Daarom: GEEN deferReply / editReply hier, maar interaction.update(...)
+     */
+
+    // ✅ confirm -> voorkom dubbel ticket + update & auto verdwijn (van HETZELFDE bericht)
+    if (interaction.customId.startsWith('taak_confirm:')) {
+      const parts = interaction.customId.split(':');
+      const spelNummer = parts[1];
+      const taakNummer = parts[2];
+
+      // Check open ticket voor dezelfde user/spel/taak
+      const existing = interaction.guild.channels.cache.find((c) => {
+        if (c.type !== ChannelType.GuildText) return false;
+        if (TICKETS_CATEGORY_ID && c.parentId !== TICKETS_CATEGORY_ID) return false;
+        const topic = c.topic || '';
+        return topic.includes(`Spel ${spelNummer}`) && topic.includes(`Taak ${taakNummer}`) && topic.includes(`User ${interaction.user.id}`);
+      });
+
+      if (existing) {
+        await interaction
+          .update({
+            content: `ℹ️ Je hebt al een ticket openstaan voor **Spel ${spelNummer} – Taak ${taakNummer}**: ${existing}\nDit bericht verdwijnt zo.`,
+            components: [],
+          })
+          .catch(() => {});
+
+        setTimeout(() => {
+          interaction.deleteReply().catch(() => {});
+        }, 5000);
+
+        return;
+      }
+
+      try {
+        const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
+
+        await interaction
+          .update({
+            content: `✅ Ticket aangemaakt: ${ticket}\nDit bericht verdwijnt zo.`,
+            components: [],
+          })
+          .catch(() => {});
+
+        setTimeout(() => {
+          interaction.deleteReply().catch(() => {});
+        }, 5000);
+
+        return;
+      } catch (err) {
+        console.error(err);
+
+        await interaction
+          .update({
+            content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.\nDit bericht verdwijnt zo.',
+            components: [],
+          })
+          .catch(() => {});
+
+        setTimeout(() => {
+          interaction.deleteReply().catch(() => {});
+        }, 7000);
+
+        return;
+      }
+    }
+
+    // ✅ cancel -> update & auto verdwijn (van HETZELFDE bericht)
+    if (interaction.customId.startsWith('taak_cancel:')) {
+      await interaction
+        .update({
+          content: '❌ Geannuleerd. Er is geen ticket aangemaakt.\nDit bericht verdwijnt zo.',
+          components: [],
+        })
+        .catch(() => {});
+
+      setTimeout(() => {
+        interaction.deleteReply().catch(() => {});
+      }, 4000);
+
+      return;
+    }
+
     // alle andere buttons: defer (veilig)
     await ensureEphemeralDefer(interaction);
 
@@ -1166,84 +1250,6 @@ client.on('interactionCreate', async (interaction) => {
         console.error(err);
         return interaction.editReply('❌ Ik kan deze rol niet geven. Zet mijn botrol boven de Spel-rol en geef Manage Roles.');
       }
-    }
-
-    // ✅ FIX: confirm -> voorkom dubbel ticket + auto verdwijn
-    if (interaction.customId.startsWith('taak_confirm:')) {
-      const parts = interaction.customId.split(':');
-      const spelNummer = parts[1];
-      const taakNummer = parts[2];
-
-      // Check open ticket voor dezelfde user/spel/taak
-      const existing = interaction.guild.channels.cache.find((c) => {
-        if (c.type !== ChannelType.GuildText) return false;
-        if (TICKETS_CATEGORY_ID && c.parentId !== TICKETS_CATEGORY_ID) return false;
-        const topic = c.topic || '';
-        return topic.includes(`Spel ${spelNummer}`) && topic.includes(`Taak ${taakNummer}`) && topic.includes(`User ${interaction.user.id}`);
-      });
-
-      if (existing) {
-        await interaction
-          .editReply({
-            content: `ℹ️ Je hebt al een ticket openstaan voor **Spel ${spelNummer} – Taak ${taakNummer}**: ${existing}\nDit bericht verdwijnt zo.`,
-            components: [],
-          })
-          .catch(() => {});
-
-        setTimeout(() => {
-          interaction.deleteReply().catch(() => {});
-        }, 5000);
-
-        return;
-      }
-
-      try {
-        const ticket = await maakTicketKanaal({ guild: interaction.guild, user: interaction.user, spelNummer, taakNummer });
-
-        await interaction
-          .editReply({
-            content: `✅ Ticket aangemaakt: ${ticket}\nDit bericht verdwijnt zo.`,
-            components: [],
-          })
-          .catch(() => {});
-
-        setTimeout(() => {
-          interaction.deleteReply().catch(() => {});
-        }, 5000);
-
-        return;
-      } catch (err) {
-        console.error(err);
-
-        await interaction
-          .editReply({
-            content: '❌ Ticket kon niet worden aangemaakt. Check tickets-categorie + rechten.\nDit bericht verdwijnt zo.',
-            components: [],
-          })
-          .catch(() => {});
-
-        setTimeout(() => {
-          interaction.deleteReply().catch(() => {});
-        }, 7000);
-
-        return;
-      }
-    }
-
-    // ✅ FIX: cancel -> auto verdwijn
-    if (interaction.customId.startsWith('taak_cancel:')) {
-      await interaction
-        .editReply({
-          content: '❌ Geannuleerd. Er is geen ticket aangemaakt.\nDit bericht verdwijnt zo.',
-          components: [],
-        })
-        .catch(() => {});
-
-      setTimeout(() => {
-        interaction.deleteReply().catch(() => {});
-      }, 4000);
-
-      return;
     }
 
     if (interaction.customId.startsWith('taak_')) {
