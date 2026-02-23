@@ -69,13 +69,13 @@ function getOrCreateGame(data, guildId, spelNummer) {
       taakCounts: { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 },
       dashboard: { channelId: null, messageId: null },
       ui: { tasksChannelId: null, tasksMessageId: null },
-      adminDashboard: { channelId: null, messageId: null, extraMessageIds: [] }, // ✅ nieuw: extra pagina's
+      adminDashboard: { channelId: null, messageId: null, extraMessageIds: [] }, // ✅ paging support
       adminChannelId: null,
       closed: false,
       closedAt: null,
     };
   } else {
-    // ✅ backward compatible: als oude data nog geen extraMessageIds had
+    // backward compatible
     if (!data[guildId][spelNummer].adminDashboard) {
       data[guildId][spelNummer].adminDashboard = { channelId: null, messageId: null, extraMessageIds: [] };
     } else if (!Array.isArray(data[guildId][spelNummer].adminDashboard.extraMessageIds)) {
@@ -300,6 +300,18 @@ function resetGameProgress(game) {
   game.taakCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 };
 }
 
+/* ---------------- ensure ephemeral defer helper ---------------- */
+
+async function ensureEphemeralDefer(interaction) {
+  try {
+    if (interaction.deferred || interaction.replied) return true;
+    await interaction.deferReply({ ephemeral: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /* ---------------- opschoon helpers ---------------- */
 
 function deelnemerIsLeeg(info) {
@@ -332,6 +344,13 @@ function sanitizeDeelnemerStructuur(game) {
   for (let t = 1; t <= 9; t++) {
     const k = String(t);
     game.taakSpots[k] = toNumber(game.taakSpots[k], 0);
+  }
+
+  if (!game.adminDashboard || typeof game.adminDashboard !== 'object') {
+    game.adminDashboard = { channelId: null, messageId: null, extraMessageIds: [] };
+  }
+  if (!Array.isArray(game.adminDashboard.extraMessageIds)) {
+    game.adminDashboard.extraMessageIds = [];
   }
 }
 
@@ -395,7 +414,6 @@ function buildAdminDashboardRows(game) {
     .sort((a, b) => b.spots - a.spots);
 }
 
-// ✅ NIEUW: split admin dashboard in meerdere berichten (Discord 2000 char limiet)
 function buildAdminDashboardPages(game, spelNummer) {
   const rows = buildAdminDashboardRows(game);
 
@@ -414,20 +432,18 @@ function buildAdminDashboardPages(game, spelNummer) {
     return `${idx + 1}. <@${r.userId}>  —  **${r.spots}** Spots  |  ${t}  |  **Totaal:${r.totaalTaken}**`;
   });
 
-  const MAX = 1900; // veilig onder 2000
+  const MAX = 1900; // safe under Discord 2000
   const pages = [];
 
   let current = headerBase;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] + '\n';
     if ((current + line).length > MAX) {
       pages.push(current.trimEnd());
-
-      // vervolg pagina (kortere header)
       current =
         `🔒 **Admin Dashboard — Spel ${spelNummer} (vervolg)**\n\n` +
-        (banner ? banner : '') +
-        '';
+        (banner || '');
     }
     current += line;
   }
@@ -509,16 +525,14 @@ async function ensureAdminChannel(guild, guildId, spelNummer) {
   return ch;
 }
 
-// ✅ NIEUW: admin dashboard aanmaken (meerdere berichten)
 async function ensureAdminDashboard(guild, guildId, spelNummer) {
   const data = loadData();
   const game = getOrCreateGame(data, guildId, spelNummer);
 
   const adminCh = await ensureAdminChannel(guild, guildId, spelNummer);
-
   const pages = buildAdminDashboardPages(game, spelNummer);
 
-  // probeer bestaande te editen
+  // Try edit existing first message
   if (game.adminDashboard?.channelId && game.adminDashboard?.messageId) {
     const ch = await guild.channels.fetch(game.adminDashboard.channelId).catch(() => null);
     if (ch && ch.isTextBased()) {
@@ -526,14 +540,14 @@ async function ensureAdminDashboard(guild, guildId, spelNummer) {
       if (firstMsg) {
         await firstMsg.edit(pages[0]).catch(() => {});
 
-        // verwijder oude extra pagina's
+        // delete old extra pages
         const oldExtra = Array.isArray(game.adminDashboard.extraMessageIds) ? game.adminDashboard.extraMessageIds : [];
         for (const mid of oldExtra) {
           const m = await ch.messages.fetch(mid).catch(() => null);
           if (m) await m.delete().catch(() => {});
         }
 
-        // plaats nieuwe extra pagina's
+        // send new extra pages
         const extraIds = [];
         for (let i = 1; i < pages.length; i++) {
           const m = await adminCh.send(pages[i]).catch(() => null);
@@ -547,7 +561,7 @@ async function ensureAdminDashboard(guild, guildId, spelNummer) {
     }
   }
 
-  // anders: nieuw plaatsen
+  // Else place new
   const first = await adminCh.send(pages[0]).catch(() => null);
   if (!first) return;
 
@@ -561,7 +575,6 @@ async function ensureAdminDashboard(guild, guildId, spelNummer) {
   saveData(data);
 }
 
-// ✅ NIEUW: admin dashboard updaten (meerdere berichten)
 async function updateAdminDashboard(guild, guildId, spelNummer) {
   const data = loadData();
   const game = getOrCreateGame(data, guildId, spelNummer);
@@ -580,14 +593,14 @@ async function updateAdminDashboard(guild, guildId, spelNummer) {
 
   await first.edit(pages[0]).catch(() => {});
 
-  // verwijder oude extra pagina's
+  // delete old extra pages
   const oldExtra = Array.isArray(game.adminDashboard.extraMessageIds) ? game.adminDashboard.extraMessageIds : [];
   for (const mid of oldExtra) {
     const m = await ch.messages.fetch(mid).catch(() => null);
     if (m) await m.delete().catch(() => {});
   }
 
-  // plaats nieuwe extra pagina's
+  // send new extra pages
   const extraIds = [];
   for (let i = 1; i < pages.length; i++) {
     const m = await ch.send(pages[i]).catch(() => null);
@@ -717,16 +730,43 @@ async function setAanmeldenButtonInChannel(channel, disabled) {
   return true;
 }
 
-/* ---------------- ensure ephemeral defer helper ---------------- */
+async function forceRefreshAdminDashboard(guild, guildId, spelNummer) {
+  const data = loadData();
+  const game = getOrCreateGame(data, guildId, spelNummer);
 
-async function ensureEphemeralDefer(interaction) {
-  try {
-    if (interaction.deferred || interaction.replied) return true;
-    await interaction.deferReply({ ephemeral: true });
-    return true;
-  } catch {
-    return false;
+  const adminCh = await ensureAdminChannel(guild, guildId, spelNummer);
+
+  // delete old tracked pages if possible
+  const old = game.adminDashboard || {};
+  const ch = await guild.channels.fetch(old.channelId || adminCh.id).catch(() => null);
+
+  if (ch && ch.isTextBased()) {
+    if (old.messageId) {
+      const m = await ch.messages.fetch(old.messageId).catch(() => null);
+      if (m) await m.delete().catch(() => {});
+    }
+    if (Array.isArray(old.extraMessageIds)) {
+      for (const mid of old.extraMessageIds) {
+        const m2 = await ch.messages.fetch(mid).catch(() => null);
+        if (m2) await m2.delete().catch(() => {});
+      }
+    }
   }
+
+  // now create fresh set
+  const pages = buildAdminDashboardPages(game, spelNummer);
+  const first = await adminCh.send(pages[0]).catch(() => null);
+  if (!first) return false;
+
+  const extraIds = [];
+  for (let i = 1; i < pages.length; i++) {
+    const m = await adminCh.send(pages[i]).catch(() => null);
+    if (m) extraIds.push(m.id);
+  }
+
+  game.adminDashboard = { channelId: adminCh.id, messageId: first.id, extraMessageIds: extraIds };
+  saveData(data);
+  return true;
 }
 
 /* ---------------- Main interaction handler ---------------- */
@@ -863,7 +903,7 @@ client.on('interactionCreate', async (interaction) => {
       game.closedAt = new Date().toISOString();
       saveData(data);
 
-      let tasksLocked = await setTasksButtonsForGame(interaction.guild, interaction.guildId, spelNummer, true).catch(() => false);
+      const tasksLocked = await setTasksButtonsForGame(interaction.guild, interaction.guildId, spelNummer, true).catch(() => false);
 
       let aanmeldenLocked = false;
       try {
@@ -911,7 +951,7 @@ client.on('interactionCreate', async (interaction) => {
       game.closedAt = null;
       saveData(data);
 
-      let tasksUnlocked = await setTasksButtonsForGame(interaction.guild, interaction.guildId, spelNummer, false).catch(() => false);
+      const tasksUnlocked = await setTasksButtonsForGame(interaction.guild, interaction.guildId, spelNummer, false).catch(() => false);
 
       let aanmeldenUnlocked = false;
       try {
@@ -993,6 +1033,7 @@ client.on('interactionCreate', async (interaction) => {
 
       const spotsPer = toNumber(game.taakSpots?.[taakKey] ?? 0, 0);
 
+      // Negatief = afnemen (veilig: niet onder 0)
       if (aantal < 0) {
         const abs = Math.abs(aantal);
 
@@ -1013,9 +1054,22 @@ client.on('interactionCreate', async (interaction) => {
         await updateDashboard(interaction.guild, interaction.guildId, spelNummer);
         await updateAdminDashboard(interaction.guild, interaction.guildId, spelNummer);
 
-        return interaction.reply({ content: `✅ Afgenomen van ${lid}. Dashboards bijgewerkt.`, ephemeral: true });
+        await logToChannel(
+          interaction.guild,
+          `🛠️ **Handmatige afname**\n🎡 Spel: **${spelNummer}**\n👤 Lid: ${lid} (\`${lid.id}\`)\n` +
+            `📌 Taak: **${taak}** | 🔁 Aantal: **-${abs}**\n` +
+            `➖ Spots: **${spotsAfnemen}** (=${spotsPer} × ${abs})\n` +
+            `🛠️ Admin: ${interaction.user} (\`${interaction.user.id}\`)\n🕒 ${formatTimestamp(new Date())}`
+        );
+
+        return interaction.reply({
+          content:
+            `✅ Afgenomen van ${lid}:\n• Spel ${spelNummer} — Taak ${taak} × ${-abs}\n• Spots eraf: ${spotsAfnemen} (=${spotsPer}×${abs})\nDashboards bijgewerkt.`,
+          ephemeral: true,
+        });
       }
 
+      // Positief = toekennen
       const spotsTotaal = spotsPer * aantal;
 
       game.deelnemers[lid.id].taken[taakKey] = toNumber(game.deelnemers[lid.id].taken[taakKey] ?? 0, 0) + aantal;
@@ -1028,7 +1082,19 @@ client.on('interactionCreate', async (interaction) => {
       await updateDashboard(interaction.guild, interaction.guildId, spelNummer);
       await updateAdminDashboard(interaction.guild, interaction.guildId, spelNummer);
 
-      return interaction.reply({ content: `✅ Toegekend aan ${lid}. Dashboards bijgewerkt.`, ephemeral: true });
+      await logToChannel(
+        interaction.guild,
+        `🛠️ **Handmatige toekenning**\n🎡 Spel: **${spelNummer}**\n👤 Lid: ${lid} (\`${lid.id}\`)\n` +
+          `📌 Taak: **${taak}** | 🔁 Aantal: **${aantal}**\n` +
+          `➕ Spots: **${spotsTotaal}** (=${spotsPer} × ${aantal})\n` +
+          `🛠️ Admin: ${interaction.user} (\`${interaction.user.id}\`)\n🕒 ${formatTimestamp(new Date())}`
+      );
+
+      return interaction.reply({
+        content:
+          `✅ Toegekend aan ${lid}:\n• Spel ${spelNummer} — Taak ${taak} × ${aantal}\n• Spots erbij: ${spotsTotaal} (=${spotsPer}×${aantal})\nDashboards bijgewerkt.`,
+        ephemeral: true,
+      });
     }
 
     if (interaction.commandName === 'opschoonspel') {
@@ -1042,13 +1108,27 @@ client.on('interactionCreate', async (interaction) => {
       const data = loadData();
       const game = getOrCreateGame(data, interaction.guildId, spelNummer);
 
+      // 1) repair (veilig)
       sanitizeDeelnemerStructuur(game);
       saveData(data);
 
+      // 2) refresh dashboards
       await updateDashboard(interaction.guild, interaction.guildId, spelNummer);
       await updateAdminDashboard(interaction.guild, interaction.guildId, spelNummer);
 
-      return interaction.reply({ content: `🧹 Opschoonspel (SAFE MODE) klaar voor Spel ${spelNummer}.`, ephemeral: true });
+      // 3) force refresh admin dashboard (nieuw bericht + track)
+      const forced = await forceRefreshAdminDashboard(interaction.guild, interaction.guildId, spelNummer).catch(() => false);
+
+      await logToChannel(
+        interaction.guild,
+        `🧹 **Opschoonspel uitgevoerd (SAFE MODE)**\n🎡 Spel: **${spelNummer}**\n` +
+          `🔁 Admin dashboard force refresh: ${forced ? 'ja' : 'nee'}\n🛠️ Admin: ${interaction.user} (\`${interaction.user.id}\`)\n🕒 ${formatTimestamp(new Date())}`
+      );
+
+      return interaction.reply({
+        content: `🧹 Opschoonspel (SAFE MODE) klaar voor Spel ${spelNummer}.\n• Admin dashboard force refresh: ${forced ? '✅' : '⚠️'}`,
+        ephemeral: true,
+      });
     }
 
     return;
@@ -1056,6 +1136,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // Buttons
   if (interaction.isButton()) {
+    // Afkeurknop: direct modal
     if (interaction.customId === 'ticket_afkeuren') {
       if (!hasAdminPermission(interaction)) {
         return interaction.reply({ content: '❌ Alleen admins kunnen dit.', ephemeral: true });
@@ -1063,6 +1144,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.showModal(buildAfkeurModal(interaction.channelId));
     }
 
+    // alle andere buttons: defer (veilig)
     await ensureEphemeralDefer(interaction);
 
     if (interaction.customId === 'aanmelden_spel') {
@@ -1161,7 +1243,24 @@ client.on('interactionCreate', async (interaction) => {
       await updateDashboard(interaction.guild, interaction.guildId, info.spelNummer);
       await updateAdminDashboard(interaction.guild, interaction.guildId, info.spelNummer);
 
-      await interaction.editReply('✅ Goedgekeurd + dashboards geüpdatet.');
+      const dmOk = await dmUserSafe(
+        targetUser,
+        `✅ Je bewijs is verwerkt voor **Spel ${info.spelNummer} – Taak ${info.taakNummer}**.\nJe hebt **${spotsVoorTaak} Spots** ontvangen. 🎡`
+      );
+
+      await interaction.channel.send(
+        `✅ Ticket goedgekeurd door ${interaction.user}.\n➕ **${spotsVoorTaak} Spots** toegekend.\n` +
+          `${dmOk ? '📩 DM verstuurd.' : '⚠️ Kon geen DM sturen.'}\n🔒 Ticket wordt gesloten.`
+      ).catch(() => {});
+
+      await logToChannel(
+        interaction.guild,
+        `✅ **Ticket goedgekeurd**\n👤 Deelnemer: <@${info.userId}> (\`${info.userId}\`)\n` +
+          `🛠️ Admin: ${interaction.user} (\`${interaction.user.id}\`)\n🎡 Spel: **${info.spelNummer}** | 📌 Taak: **${info.taakNummer}**\n` +
+          `➕ Spots: **${spotsVoorTaak}**\n🕒 Afgehandeld: ${formatTimestamp(new Date())}\n📍 Ticket: ${interaction.channel}`
+      );
+
+      await interaction.editReply('✅ Goedgekeurd + dashboard geüpdatet.');
       await closeTicketChannel(interaction.channel, 'goedgekeurd');
       return;
     }
@@ -1188,6 +1287,20 @@ client.on('interactionCreate', async (interaction) => {
         `❌ Je bewijs is **afgekeurd** voor **Spel ${info.spelNummer} – Taak ${info.taakNummer}**.\n\n**Reden:** ${reason}`
       );
     }
+
+    await interaction.channel.send(
+      `❌ Ticket afgekeurd door ${interaction.user}.\n**Reden:** ${reason}\n` +
+        `${dmOk ? '📩 DM verstuurd.' : '⚠️ Kon geen DM sturen.'}\n🔒 Ticket wordt gesloten.`
+    ).catch(() => {});
+
+    await logToChannel(
+      interaction.guild,
+      `❌ **Ticket afgekeurd**\n👤 Deelnemer: <@${info.userId}> (\`${info.userId}\`)\n` +
+        `🛠️ Admin: ${interaction.user} (\`${interaction.user.id}\`)\n🎡 Spel: **${info.spelNummer}** | 📌 Taak: **${info.taakNummer}**\n` +
+        `🕒 Afgehandeld: ${formatTimestamp(new Date())}\n📝 Reden: ${reason}\n📍 Ticket: ${interaction.channel}`
+    );
+
+    await updateAdminDashboard(interaction.guild, interaction.guildId, info.spelNummer);
 
     await interaction.editReply('✅ Afgekeurd + gelogd.');
     await closeTicketChannel(interaction.channel, 'afgekeurd');
