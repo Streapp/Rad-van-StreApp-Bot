@@ -30,7 +30,8 @@ const DISK_MOUNT_PATH = '/var/data'; // Render Disk mount
 const DATA_DIR = fs.existsSync(DISK_MOUNT_PATH) ? DISK_MOUNT_PATH : path.join(__dirname, '..', 'data');
 const DATA_FILE = path.join(DATA_DIR, 'speldata.json');
 
-client.once('clientReady', () => {
+// ✅ FIX: discord.js v14 gebruikt 'ready' (niet 'clientReady')
+client.once('ready', () => {
   console.log(`Bot is online als ${client.user.tag}`);
 });
 
@@ -1372,4 +1373,8 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// ✅ FIX: log echte login-fout in Render (anders blijft het stil + bot offline)
+client.login(process.env.DISCORD_TOKEN).catch((err) => {
+  console.error('❌ Discord login failed:', err);
+  process.exit(1);
+});
